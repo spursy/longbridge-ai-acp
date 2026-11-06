@@ -17,8 +17,9 @@ pub use backend::{
     AgentSessionPage, BackendError, LoadedAgentSession, Prompt, ATTACHMENT_META_KEY,
 };
 pub use client::{
-    with_external_session, with_initialized_session, with_session, AgentHandshake, ClientDelegate,
-    DenyPermissions, ExternalAgent, ExternalAgentConfig, ExternalAgentKind,
+    with_external_session, with_initialized_session, with_session, AgentHandshake,
+    AllowlistedTools, AllowPermissions, ClientDelegate, DenyPermissions, ExternalAgent,
+    ExternalAgentConfig, ExternalAgentKind,
 };
 pub use desktop::{
     DesktopSession, DesktopSessionEvent, DesktopSessionEvents, DesktopSessionHandle,

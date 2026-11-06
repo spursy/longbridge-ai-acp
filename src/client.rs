@@ -1,9 +1,11 @@
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, Implementation, InitializeRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse,
+    AgentCapabilities, Implementation, InitializeRequest, PermissionOption, PermissionOptionKind,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, ActiveSession, Agent, Client, ConnectTo};
+// use agent_client_protocol_schema::v1::{HttpHeader, McpServer, McpServerHttp, NewSessionRequest};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,6 +74,106 @@ impl ClientDelegate for DenyPermissions {
     }
 }
 
+/// Permissive delegate for trusted hosts: auto-approves every tool call by
+/// selecting an "allow" option offered by the agent (prefers `AllowAlways`,
+/// falls back to `AllowOnce`). Returns `Cancelled` only when the agent offers
+/// no allow option at all.
+pub struct AllowPermissions;
+
+#[async_trait]
+impl ClientDelegate for AllowPermissions {
+    async fn request_permission(
+        &self,
+        request: RequestPermissionRequest,
+    ) -> RequestPermissionResponse {
+        let chosen = request
+            .options
+            .iter()
+            .find(|option| matches!(option.kind, PermissionOptionKind::AllowAlways))
+            .or_else(|| {
+                request
+                    .options
+                    .iter()
+                    .find(|option| matches!(option.kind, PermissionOptionKind::AllowOnce))
+            });
+
+        let outcome = match chosen {
+            Some(option) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                option.option_id.clone(),
+            )),
+            None => RequestPermissionOutcome::Cancelled,
+        };
+        RequestPermissionResponse::new(outcome)
+    }
+}
+
+/// Auto-approves navlane MCP tools and the algo-terminal workflow, rejecting
+/// every other tool call.
+///
+/// Three title shapes are allowed, as surfaced in the tool call's `title`:
+/// - `mcp__navlane*` — navlane's MCP servers (`navlane`, `navlane-us`), named
+///   `mcp__<server>__<tool>`.
+/// - `Load skill: algo-terminal` — launching the algo-terminal skill.
+/// - `algo *` — the `algo` CLI commands that skill runs through Bash.
+pub struct AllowlistedTools;
+
+impl AllowlistedTools {
+    /// Whether the tool call is on the allowlist (navlane MCP or algo-terminal).
+    fn is_allowed(request: &RequestPermissionRequest) -> bool {
+        request
+            .tool_call
+            .fields
+            .title
+            .as_deref()
+            .is_some_and(|title| {
+                title.starts_with("mcp__navlane")
+                    || title.starts_with("Load skill: algo-terminal")
+                    || title.starts_with("algo ")
+            })
+    }
+
+    /// Pick the first option of `primary` kind, else the first of `fallback`.
+    fn pick(
+        options: &[PermissionOption],
+        primary: PermissionOptionKind,
+        fallback: PermissionOptionKind,
+    ) -> Option<&PermissionOption> {
+        options
+            .iter()
+            .find(|option| option.kind == primary)
+            .or_else(|| options.iter().find(|option| option.kind == fallback))
+    }
+}
+
+#[async_trait]
+impl ClientDelegate for AllowlistedTools {
+    async fn request_permission(
+        &self,
+        request: RequestPermissionRequest,
+    ) -> RequestPermissionResponse {
+        // Allowlisted tools get an allow option; anything else gets rejected.
+        let (primary, fallback) = if Self::is_allowed(&request) {
+            (
+                PermissionOptionKind::AllowOnce,
+                PermissionOptionKind::AllowAlways,
+            )
+        } else {
+            (
+                PermissionOptionKind::RejectAlways,
+                PermissionOptionKind::RejectOnce,
+            )
+        };
+
+        let outcome = match Self::pick(&request.options, primary, fallback) {
+            Some(option) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                option.option_id.clone(),
+            )),
+            None => RequestPermissionOutcome::Cancelled,
+        };
+        RequestPermissionResponse::new(outcome)
+    }
+}
+
 /// Run one persistent ACP session against any agent transport.
 ///
 /// Passing [`crate::acp_agent`] keeps Longbridge AI fully in-process. Passing
@@ -121,6 +223,20 @@ pub async fn with_initialized_session<R>(
                 capabilities: response.agent_capabilities,
                 implementation: response.agent_info,
             };
+            // Build a custom `NewSessionRequest` so the agent is told which MCP
+            // servers to connect to for this session. Here we register a single
+            // stdio MCP server; add more entries to `mcp_servers` as needed.
+            // let new_session_request =
+            //     NewSessionRequest::new(cwd.into()).mcp_servers(vec![McpServer::Http(
+            //         McpServerHttp::new(
+            //             "navlane",
+            //             "https://navlane.longbridge-inc.com/api/v1/openapi/mcp",
+            //         )
+            //         .headers(vec![HttpHeader::new(
+            //             "X-User-Token",
+            //             "nl_e8366fc2a1874ce1ae9fafc28610963f",
+            //         )]),
+            //     )]);
             connection
                 .build_session(cwd.into())
                 .block_task()

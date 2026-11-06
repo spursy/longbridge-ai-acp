@@ -12,6 +12,7 @@ categories = ["api-bindings"]
 
 [dependencies]
 agent-client-protocol = { version = "2.0.0", features = ["unstable_auth_methods"] }
+agent-client-protocol-schema = { version = "1.5.0", features = ["unstable_auth_methods"] }
 async-trait = "0.1"
 base64 = "0.22"
 futures = "0.3"
@@ -26,6 +27,10 @@ uuid = { version = "1", features = ["v4"] }
 # `test-util` provides `#[tokio::test(start_paused = true)]`, which is what
 # makes the backend inactivity timeout branch testable without a real minute.
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
+# Examples-only: the `zed_agent` example makes a real HTTP call to the
+# Longbridge inner-next gateway. Kept out of the library's own dependencies so
+# the published crate stays HTTP-client-free.
+reqwest = { version = "0.12", features = ["json"] }
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
