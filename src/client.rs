@@ -107,29 +107,64 @@ impl ClientDelegate for AllowPermissions {
     }
 }
 
-/// Auto-approves navlane MCP tools and the algo-terminal workflow, rejecting
-/// every other tool call.
+/// Auto-approves MCP tools and the claude-skills workflow, rejecting every
+/// other tool call.
 ///
-/// Three title shapes are allowed, as surfaced in the tool call's `title`:
-/// - `mcp__navlane*` — navlane's MCP servers (`navlane`, `navlane-us`), named
-///   `mcp__<server>__<tool>`.
-/// - `Load skill: algo-terminal` — launching the algo-terminal skill.
-/// - `algo *` — the `algo` CLI commands that skill runs through Bash.
+/// Allowed, as surfaced in the tool call's `title`:
+/// - `mcp__*` — any MCP server tool, named `mcp__<server>__<tool>`.
+/// - `Load skill: *` — launching any claude skill.
+/// - `algo *` — the `algo` CLI commands a skill runs through Bash.
+///
+/// Also allowed are file tools (Read/Grep/Glob/Edit/…) whose target lives
+/// under a claude skills directory, detected from the tool call's `locations`
+/// or `raw_input` (see [`SKILL_PATH_MARKERS`]).
 pub struct AllowlistedTools;
 
+/// Substrings that mark a path as belonging to a claude skills directory.
+/// Matched against both the canonical `~/.claude/skills/` location and the
+/// `~/.agents/skills/` symlink target, so it works regardless of the user.
+const SKILL_PATH_MARKERS: [&str; 2] = ["/.claude/skills/", "/.agents/skills/"];
+
 impl AllowlistedTools {
-    /// Whether the tool call is on the allowlist (navlane MCP or algo-terminal).
+    /// Whether the tool call is on the allowlist: any MCP tool, a skill load,
+    /// an `algo` CLI command, or a file tool targeting a claude skills path.
     fn is_allowed(request: &RequestPermissionRequest) -> bool {
-        request
+        let title_allowed = request
             .tool_call
             .fields
             .title
             .as_deref()
             .is_some_and(|title| {
-                title.starts_with("mcp__navlane")
-                    || title.starts_with("Load skill: algo-terminal")
+                title.starts_with("mcp__")
+                    || title.starts_with("Load skill: ")
                     || title.starts_with("algo ")
-            })
+            });
+        title_allowed || Self::targets_skill_path(request)
+    }
+
+    /// Whether the tool call targets a file under a claude skills directory,
+    /// inspecting the reported `locations` and the raw tool input.
+    fn targets_skill_path(request: &RequestPermissionRequest) -> bool {
+        let fields = &request.tool_call.fields;
+        if let Some(locations) = &fields.locations {
+            if locations
+                .iter()
+                .any(|location| Self::is_skill_path(&location.path.to_string_lossy()))
+            {
+                return true;
+            }
+        }
+        if let Some(raw_input) = &fields.raw_input {
+            if Self::is_skill_path(&raw_input.to_string()) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Whether `text` references a claude skills directory.
+    fn is_skill_path(text: &str) -> bool {
+        SKILL_PATH_MARKERS.iter().any(|marker| text.contains(marker))
     }
 
     /// Pick the first option of `primary` kind, else the first of `fallback`.
